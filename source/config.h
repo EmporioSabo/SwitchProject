@@ -2,7 +2,7 @@
 #define CONFIG_H
 
 // MQTT Broker configuration
-#define MQTT_BROKER_IP      "192.168.1.100"  // TODO: set to your PC's local IP
+#define MQTT_BROKER_IP      "192.168.1.229"  // TODO: set to your PC's local IP
 #define MQTT_BROKER_PORT    1883
 #define MQTT_CLIENT_ID      "switch-01"
 
