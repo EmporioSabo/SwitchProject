@@ -49,7 +49,7 @@ Edit `source/config.h` before building:
 
 - [x] Step 0 — devkitPro toolchain via container
 - [x] Step 1 — Hello world: network init, IP display, clean exit
-- [ ] Step 2 — Raw TCP connection to Mosquitto
+- [x] Step 2 — Raw TCP connection to Mosquitto
 - [ ] Step 3 — Paho MQTT Embedded C integration
 - [ ] Step 4 — Sensor HAL (battery, temperatures, WiFi)
 - [ ] Step 5 — Full telemetry loop (collect → JSON → publish)
