@@ -18,16 +18,20 @@ include $(DEVKITPRO)/libnx/switch_rules
 #---------------------------------------------------------------------------------
 TARGET		:=	switch-mqtt-telemetry
 BUILD		:=	build
-SOURCES		:=	source
+SOURCES		:=	source \
+				lib/paho.mqtt.embedded-c/MQTTPacket/src \
+				lib/paho.mqtt.embedded-c/MQTTClient-C/src
 DATA		:=	data
-INCLUDES	:=	include
+INCLUDES	:=	include source \
+				lib/paho.mqtt.embedded-c/MQTTPacket/src \
+				lib/paho.mqtt.embedded-c/MQTTClient-C/src
 
 #---------------------------------------------------------------------------------
 # Application metadata
 #---------------------------------------------------------------------------------
 APP_TITLE	:=	Switch MQTT Telemetry
 APP_AUTHOR	:=	adammaytoussi
-APP_VERSION	:=	0.1.0
+APP_VERSION	:=	0.3.0
 
 #---------------------------------------------------------------------------------
 # options for code generation
@@ -37,7 +41,7 @@ ARCH	:=	-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 CFLAGS	:=	-g -Wall -O2 -ffunction-sections \
 			$(ARCH) $(DEFINES)
 
-CFLAGS	+=	$(INCLUDE) -D__SWITCH__
+CFLAGS	+=	$(INCLUDE) -D__SWITCH__ -DMQTTCLIENT_PLATFORM_HEADER=mqtt_switch.h
 
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions
 
