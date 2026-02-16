@@ -1,0 +1,15 @@
+apiVersion: 1
+
+datasources:
+  - name: InfluxDB
+    uid: influxdb-switch
+    type: influxdb
+    access: proxy
+    url: http://influxdb:8086
+    jsonData:
+      version: Flux
+      organization: switch
+      defaultBucket: switch_telemetry
+    secureJsonData:
+      token: switch-telemetry-token
+    isDefault: true
