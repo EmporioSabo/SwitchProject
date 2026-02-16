@@ -66,6 +66,16 @@ typedef struct {
     u32 publish_count;
     u64 last_publish_tick;
 
+    /* Runtime-configurable intervals (initialized from config.h defaults) */
+    u32 telemetry_interval_ms;
+    u32 poll_battery_ms;
+    u32 poll_temp_ms;
+    u32 poll_wifi_ms;
+
+    /* Command stats (written by main thread) */
+    u32 cmd_count;
+    char last_cmd[32];
+
     Mutex mutex;  /* libnx mutex — lightweight, no init needed beyond zero */
 } telemetry_shared_t;
 

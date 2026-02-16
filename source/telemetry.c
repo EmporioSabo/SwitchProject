@@ -87,6 +87,16 @@ void producer_thread_entry(void *arg)
 
     while (g_running) {
         /*
+         * Read runtime poll rates under lock (fast copy).
+         * These can be changed at runtime via set_poll_rate commands.
+         */
+        mutexLock(&g_shared.mutex);
+        u32 bat_ms  = g_shared.poll_battery_ms;
+        u32 temp_ms = g_shared.poll_temp_ms;
+        u32 wifi_ms = g_shared.poll_wifi_ms;
+        mutexUnlock(&g_shared.mutex);
+
+        /*
          * Read sensors OUTSIDE the lock. Sensor reads are IPC calls
          * to system services (psm, ts, nifm) — they can take milliseconds.
          * We don't want to hold the mutex during that time.
@@ -101,7 +111,7 @@ void producer_thread_entry(void *arg)
                 g_shared.battery_valid = true;
                 mutexUnlock(&g_shared.mutex);
             }
-            next_battery = armGetSystemTick() + ms_to_ticks(SENSOR_POLL_BATTERY_MS);
+            next_battery = armGetSystemTick() + ms_to_ticks(bat_ms);
         }
 
         /* Temperature */
@@ -113,7 +123,7 @@ void producer_thread_entry(void *arg)
                 g_shared.temperature_valid = true;
                 mutexUnlock(&g_shared.mutex);
             }
-            next_temp = armGetSystemTick() + ms_to_ticks(SENSOR_POLL_TEMP_MS);
+            next_temp = armGetSystemTick() + ms_to_ticks(temp_ms);
         }
 
         /* WiFi */
@@ -125,7 +135,7 @@ void producer_thread_entry(void *arg)
                 g_shared.wifi_valid = true;
                 mutexUnlock(&g_shared.mutex);
             }
-            next_wifi = armGetSystemTick() + ms_to_ticks(SENSOR_POLL_WIFI_MS);
+            next_wifi = armGetSystemTick() + ms_to_ticks(wifi_ms);
         }
 
         /* Sleep 100ms — no need for sub-second precision in polling */

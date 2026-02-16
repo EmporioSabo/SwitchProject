@@ -98,7 +98,40 @@ podman-compose down -v          # stop + delete InfluxDB data
 - [x] Step 4 — Sensor HAL (battery, temperatures, WiFi)
 - [x] Step 5 — Full telemetry loop (collect → JSON → publish)
 - [x] Step 6 — Grafana dashboard (Mosquitto + InfluxDB)
-- [ ] Step 7 — Bidirectional MQTT, reconnection, QoS 1
+- [x] Step 7 — Bidirectional MQTT, QoS 1, remote commands
+
+## Remote Commands (Step 7)
+
+The Switch subscribes to `switch/cmd` (QoS 1) and responds on `switch/response`.
+
+### Supported commands
+
+| Command | Payload | Description |
+|---------|---------|-------------|
+| `set_interval` | `{"cmd":"set_interval","value":N}` | Change telemetry publish interval (1000–60000 ms) |
+| `set_poll_rate` | `{"cmd":"set_poll_rate","sensor":"battery\|temp\|wifi","value":N}` | Change sensor poll rate (1000–300000 ms) |
+| `ping` | `{"cmd":"ping"}` | Reply with `{"cmd":"pong","uptime_s":N}` on `switch/response` |
+| `identify` | `{"cmd":"identify"}` | Flash a banner on the Switch console for 3 seconds |
+| `publish_now` | `{"cmd":"publish_now"}` | Trigger an immediate telemetry publish |
+
+### Examples
+
+```bash
+# Ping the Switch
+mosquitto_pub -h localhost -t switch/cmd -m '{"cmd":"ping"}'
+
+# Change publish interval to 2 seconds
+mosquitto_pub -h localhost -t switch/cmd -m '{"cmd":"set_interval","value":2000}'
+
+# Change battery poll rate to 60 seconds
+mosquitto_pub -h localhost -t switch/cmd -m '{"cmd":"set_poll_rate","sensor":"battery","value":60000}'
+
+# Trigger immediate telemetry
+mosquitto_pub -h localhost -t switch/cmd -m '{"cmd":"publish_now"}'
+
+# Listen for responses
+mosquitto_sub -h localhost -t switch/response
+```
 
 ## Project structure
 

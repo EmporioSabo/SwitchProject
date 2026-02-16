@@ -12,8 +12,10 @@
 // MQTT topic prefix
 #define MQTT_TOPIC_PREFIX   "switch"
 
-// Single aggregated telemetry topic
+// MQTT topics
 #define MQTT_TELEMETRY_TOPIC  "switch/telemetry"
+#define MQTT_CMD_TOPIC        "switch/cmd"
+#define MQTT_RESPONSE_TOPIC   "switch/response"
 
 // Per-sensor polling intervals (producer thread)
 #define SENSOR_POLL_BATTERY_MS   30000   // Battery changes slowly
@@ -23,5 +25,8 @@
 // MQTT reconnection (exponential backoff)
 #define MQTT_RECONNECT_DELAY_MS   1000   // Initial retry delay
 #define MQTT_RECONNECT_MAX_MS    30000   // Cap at 30 seconds
+
+// MQTTYield timeout per main loop iteration (ms)
+#define MQTT_YIELD_MS             10
 
 #endif // CONFIG_H

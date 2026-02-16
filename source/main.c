@@ -1,5 +1,5 @@
 /*
- * main.c - Switch MQTT Telemetry v0.5
+ * main.c - Switch MQTT Telemetry v0.6
  *
  * Two-thread producer/consumer architecture:
  *
@@ -7,6 +7,12 @@
  *                     writes latest readings to shared buffer
  *   Main thread     — acts as the consumer: reads shared buffer,
  *                     builds JSON, publishes to MQTT, renders UI
+ *
+ * Step 7 additions:
+ *   - Subscribes to switch/cmd for remote commands (QoS 1)
+ *   - Publishes telemetry at QoS 1 (guaranteed delivery)
+ *   - Responds to: set_interval, set_poll_rate, ping, identify, publish_now
+ *   - MQTTYield runs every loop iteration for prompt command delivery
  *
  * Why MQTT runs on the main thread instead of a dedicated consumer:
  * libnx's BSD socket layer routes all socket calls through a single
@@ -41,6 +47,20 @@
  */
 #define THREAD_STACK_SIZE  0x10000
 
+/* ──────────────────────────────────────────────────────────────────────
+ * Command handler state — file-scope statics accessed only from main
+ * thread (command_handler runs inside MQTTYield on the main thread).
+ * ──────────────────────────────────────────────────────────────────── */
+
+static bool g_publish_now;              /* trigger immediate telemetry */
+static u64  g_identify_until;           /* tick when identify banner expires */
+static u64  g_start_tick;               /* app start time for uptime calc */
+static char g_response_buf[256];        /* pending response JSON */
+static bool g_has_response;             /* response ready to publish */
+
+/* Forward declaration — defined after helpers */
+static void command_handler(MessageData *data);
+
 /* Charger type as human-readable string (for UI display) */
 static const char *charger_type_str(PsmChargerType type)
 {
@@ -63,6 +83,14 @@ static const char *mqtt_state_str(mqtt_state_t state)
     case MQTT_STATE_RECONNECTING:  return "Reconnecting...";
     default:                       return "Unknown";
     }
+}
+
+/* Clamp a u32 value to [lo, hi] */
+static u32 clamp_u32(u32 val, u32 lo, u32 hi)
+{
+    if (val < lo) return lo;
+    if (val > hi) return hi;
+    return val;
 }
 
 /* ──────────────────────────────────────────────────────────────────────
@@ -103,12 +131,126 @@ static int mqtt_try_connect(Network *net, MQTTClient *client,
     return 0;
 }
 
+/* ──────────────────────────────────────────────────────────────────────
+ * Subscribe to command topic — must be called after every (re)connect.
+ *
+ * With cleansession=1, the broker discards subscriptions on disconnect.
+ * MQTTClientInit also clears handler slots, so we re-subscribe every time.
+ * ──────────────────────────────────────────────────────────────────── */
+
+static int mqtt_subscribe_commands(MQTTClient *client)
+{
+    return MQTTSubscribe(client, MQTT_CMD_TOPIC, QOS1, command_handler);
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Command handler — called inside MQTTYield() on the main thread.
+ *
+ * Parses incoming JSON commands from switch/cmd and either updates
+ * shared state directly or sets flags for the main loop to act on.
+ *
+ * Supported commands:
+ *   {"cmd":"set_interval","value":N}     — change publish interval (ms)
+ *   {"cmd":"set_poll_rate","sensor":"battery|temp|wifi","value":N}
+ *   {"cmd":"ping"}                       — reply with pong + uptime
+ *   {"cmd":"identify"}                   — flash UI banner
+ *   {"cmd":"publish_now"}                — trigger immediate publish
+ * ──────────────────────────────────────────────────────────────────── */
+
+static void command_handler(MessageData *data)
+{
+    /* Null-terminate the payload for cJSON (it may not be terminated) */
+    size_t len = data->message->payloadlen;
+    if (len >= 512) return;  /* ignore oversized payloads */
+
+    char buf[512];
+    memcpy(buf, data->message->payload, len);
+    buf[len] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    if (!root) return;
+
+    cJSON *cmd_item = cJSON_GetObjectItem(root, "cmd");
+    if (!cJSON_IsString(cmd_item)) {
+        cJSON_Delete(root);
+        return;
+    }
+    const char *cmd = cmd_item->valuestring;
+
+    /* Update command stats */
+    mutexLock(&g_shared.mutex);
+    g_shared.cmd_count++;
+    strncpy(g_shared.last_cmd, cmd, sizeof(g_shared.last_cmd) - 1);
+    g_shared.last_cmd[sizeof(g_shared.last_cmd) - 1] = '\0';
+    mutexUnlock(&g_shared.mutex);
+
+    if (strcmp(cmd, "set_interval") == 0) {
+        cJSON *val = cJSON_GetObjectItem(root, "value");
+        if (cJSON_IsNumber(val)) {
+            u32 ms = clamp_u32((u32)val->valuedouble, 1000, 60000);
+            mutexLock(&g_shared.mutex);
+            g_shared.telemetry_interval_ms = ms;
+            mutexUnlock(&g_shared.mutex);
+
+            snprintf(g_response_buf, sizeof(g_response_buf),
+                     "{\"cmd\":\"ack\",\"original\":\"set_interval\",\"value\":%u}", ms);
+            g_has_response = true;
+        }
+    } else if (strcmp(cmd, "set_poll_rate") == 0) {
+        cJSON *sensor = cJSON_GetObjectItem(root, "sensor");
+        cJSON *val = cJSON_GetObjectItem(root, "value");
+        if (cJSON_IsString(sensor) && cJSON_IsNumber(val)) {
+            u32 ms = clamp_u32((u32)val->valuedouble, 1000, 300000);
+            const char *s = sensor->valuestring;
+            mutexLock(&g_shared.mutex);
+            if (strcmp(s, "battery") == 0)
+                g_shared.poll_battery_ms = ms;
+            else if (strcmp(s, "temp") == 0)
+                g_shared.poll_temp_ms = ms;
+            else if (strcmp(s, "wifi") == 0)
+                g_shared.poll_wifi_ms = ms;
+            mutexUnlock(&g_shared.mutex);
+
+            snprintf(g_response_buf, sizeof(g_response_buf),
+                     "{\"cmd\":\"ack\",\"original\":\"set_poll_rate\","
+                     "\"sensor\":\"%s\",\"value\":%u}", s, ms);
+            g_has_response = true;
+        }
+    } else if (strcmp(cmd, "ping") == 0) {
+        u64 uptime_s = (armGetSystemTick() - g_start_tick) / armGetSystemTickFreq();
+        snprintf(g_response_buf, sizeof(g_response_buf),
+                 "{\"cmd\":\"pong\",\"uptime_s\":%llu}",
+                 (unsigned long long)uptime_s);
+        g_has_response = true;
+    } else if (strcmp(cmd, "identify") == 0) {
+        g_identify_until = armGetSystemTick() + 3 * armGetSystemTickFreq();
+    } else if (strcmp(cmd, "publish_now") == 0) {
+        g_publish_now = true;
+    }
+
+    cJSON_Delete(root);
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Disconnect helper — centralize disconnect + state transition
+ * ──────────────────────────────────────────────────────────────────── */
+
+static void mqtt_force_disconnect(Network *net, u64 now, u64 freq,
+                                  u64 *next_reconnect, u32 *reconnect_delay_ms)
+{
+    NetworkDisconnect(net);
+    g_shared.mqtt_state = MQTT_STATE_DISCONNECTED;
+    *next_reconnect = now + (u64)MQTT_RECONNECT_DELAY_MS * freq / 1000;
+    *reconnect_delay_ms = MQTT_RECONNECT_DELAY_MS;
+}
+
 int main(int argc, char* argv[])
 {
     (void)argc;
     (void)argv;
 
     consoleInit(NULL);
+    g_start_tick = armGetSystemTick();
 
     /* Configure input */
     PadState pad;
@@ -130,13 +272,18 @@ int main(int argc, char* argv[])
      * Initialize shared telemetry buffer.
      * libnx Mutex is zero-initialized (no init function needed),
      * but memset ensures all fields start clean.
+     * Set runtime-configurable intervals to compile-time defaults.
      */
     memset(&g_shared, 0, sizeof(g_shared));
     g_shared.mqtt_state = MQTT_STATE_DISCONNECTED;
+    g_shared.telemetry_interval_ms = TELEMETRY_INTERVAL_MS;
+    g_shared.poll_battery_ms       = SENSOR_POLL_BATTERY_MS;
+    g_shared.poll_temp_ms          = SENSOR_POLL_TEMP_MS;
+    g_shared.poll_wifi_ms          = SENSOR_POLL_WIFI_MS;
 
     /* Banner */
     printf("=================================\n");
-    printf(" Switch MQTT Telemetry v0.5\n");
+    printf(" Switch MQTT Telemetry v0.6\n");
     printf("=================================\n\n");
 
     if (R_SUCCEEDED(rc)) {
@@ -148,7 +295,8 @@ int main(int argc, char* argv[])
     }
 
     printf("Broker    : %s:%d\n", MQTT_BROKER_IP, MQTT_BROKER_PORT);
-    printf("Topic     : %s\n", MQTT_TELEMETRY_TOPIC);
+    printf("Publish   : %s (QoS 1)\n", MQTT_TELEMETRY_TOPIC);
+    printf("Subscribe : %s (QoS 1)\n", MQTT_CMD_TOPIC);
     printf("Press + to stop and exit\n\n");
     consoleUpdate(NULL);
 
@@ -197,17 +345,20 @@ int main(int argc, char* argv[])
     printf("Connecting to MQTT broker...\n");
     consoleUpdate(NULL);
 
-    mqtt_try_connect(&network, &mqtt_client,
-                     sendbuf, sizeof(sendbuf),
-                     readbuf, sizeof(readbuf));
+    if (mqtt_try_connect(&network, &mqtt_client,
+                         sendbuf, sizeof(sendbuf),
+                         readbuf, sizeof(readbuf)) == 0) {
+        mqtt_subscribe_commands(&mqtt_client);
+    }
 
     /*
-     * Main loop — UI refresh, MQTT publishing, button polling.
+     * Main loop — UI refresh, MQTT publishing, command processing.
      *
-     * Three timers run at different rates:
-     *   UI refresh:   every 500ms (2 Hz — smooth enough for status display)
-     *   MQTT publish:  every 5s   (TELEMETRY_INTERVAL_MS)
-     *   Button poll:  every 50ms  (20 Hz — responsive to user input)
+     * Timers run at different rates:
+     *   MQTTYield:    every iteration (~50ms) — process incoming commands
+     *   UI refresh:   every 500ms (2 Hz)
+     *   MQTT publish: every telemetry_interval_ms (default 5s, configurable)
+     *   Button poll:  every 50ms (20 Hz)
      */
     int ui_lines = 0;
     u64 last_ui_update = 0;
@@ -234,8 +385,9 @@ int main(int argc, char* argv[])
             if (mqtt_try_connect(&network, &mqtt_client,
                                  sendbuf, sizeof(sendbuf),
                                  readbuf, sizeof(readbuf)) == 0) {
-                /* Success — reset backoff */
+                /* Success — reset backoff, re-subscribe to commands */
                 reconnect_delay_ms = MQTT_RECONNECT_DELAY_MS;
+                mqtt_subscribe_commands(&mqtt_client);
             } else {
                 /* Failed — schedule next attempt with backoff */
                 next_reconnect = now + (u64)reconnect_delay_ms * freq / 1000;
@@ -245,54 +397,66 @@ int main(int argc, char* argv[])
             }
         }
 
-        /* ── MQTT publish (every TELEMETRY_INTERVAL_MS) ── */
-        if (now - last_publish >= (u64)TELEMETRY_INTERVAL_MS * freq / 1000) {
+        /* ── Process incoming MQTT (commands, PINGRESP, keepalive) ── */
+        if (mqtt_client.isconnected) {
+            MQTTYield(&mqtt_client, MQTT_YIELD_MS);
+
+            /* Publish pending response from command handler */
+            if (g_has_response) {
+                MQTTMessage resp;
+                memset(&resp, 0, sizeof(resp));
+                resp.qos = QOS1;
+                resp.payload = g_response_buf;
+                resp.payloadlen = strlen(g_response_buf);
+                MQTTPublish(&mqtt_client, MQTT_RESPONSE_TOPIC, &resp);
+                g_has_response = false;
+            }
+        }
+
+        /*
+         * Detect silent disconnect — Paho's keepalive may have
+         * internally set isconnected=0, but our state still says
+         * CONNECTED. Sync them so the reconnection logic triggers.
+         */
+        if (!mqtt_client.isconnected && g_shared.mqtt_state == MQTT_STATE_CONNECTED) {
+            mqtt_force_disconnect(&network, now, freq,
+                                  &next_reconnect, &reconnect_delay_ms);
+        }
+
+        /* ── MQTT publish (runtime-configurable interval) ── */
+        u32 interval_ms = g_shared.telemetry_interval_ms;
+        bool do_publish = (now - last_publish >= (u64)interval_ms * freq / 1000);
+
+        /* publish_now flag from command handler */
+        if (g_publish_now) {
+            do_publish = true;
+            g_publish_now = false;
+        }
+
+        if (do_publish && mqtt_client.isconnected) {
             last_publish = now;
 
-            if (mqtt_client.isconnected) {
-                /*
-                 * MQTTYield BEFORE publish — let Paho process incoming
-                 * PINGRESP and handle keepalive. 100ms timeout is fine
-                 * since this block only runs every 5 seconds.
-                 */
-                MQTTYield(&mqtt_client, 100);
+            char *json = telemetry_build_json();
+            if (json) {
+                MQTTMessage msg;
+                memset(&msg, 0, sizeof(msg));
+                msg.qos = QOS1;
+                msg.payload = json;
+                msg.payloadlen = strlen(json);
 
-                char *json = telemetry_build_json();
-                if (json) {
-                    MQTTMessage msg;
-                    memset(&msg, 0, sizeof(msg));
-                    msg.qos = QOS0;
-                    msg.payload = json;
-                    msg.payloadlen = strlen(json);
+                int pub_rc = MQTTPublish(&mqtt_client, MQTT_TELEMETRY_TOPIC, &msg);
+                cJSON_free(json);
 
-                    int pub_rc = MQTTPublish(&mqtt_client, MQTT_TELEMETRY_TOPIC, &msg);
-                    cJSON_free(json);
-
-                    if (pub_rc == SUCCESS) {
-                        mutexLock(&g_shared.mutex);
-                        g_shared.publish_count++;
-                        g_shared.last_publish_tick = now;
-                        mutexUnlock(&g_shared.mutex);
-                    } else {
-                        /* Publish failed — broker went away */
-                        NetworkDisconnect(&network);
-                        g_shared.mqtt_state = MQTT_STATE_DISCONNECTED;
-                        next_reconnect = now + (u64)MQTT_RECONNECT_DELAY_MS * freq / 1000;
-                        reconnect_delay_ms = MQTT_RECONNECT_DELAY_MS;
-                    }
+                if (pub_rc == SUCCESS) {
+                    mutexLock(&g_shared.mutex);
+                    g_shared.publish_count++;
+                    g_shared.last_publish_tick = now;
+                    mutexUnlock(&g_shared.mutex);
+                } else {
+                    /* Publish failed — broker went away */
+                    mqtt_force_disconnect(&network, now, freq,
+                                          &next_reconnect, &reconnect_delay_ms);
                 }
-            }
-
-            /*
-             * Detect silent disconnect — Paho's keepalive may have
-             * internally set isconnected=0, but our state still says
-             * CONNECTED. Sync them so the reconnection logic triggers.
-             */
-            if (!mqtt_client.isconnected && g_shared.mqtt_state == MQTT_STATE_CONNECTED) {
-                NetworkDisconnect(&network);
-                g_shared.mqtt_state = MQTT_STATE_DISCONNECTED;
-                next_reconnect = now + (u64)MQTT_RECONNECT_DELAY_MS * freq / 1000;
-                reconnect_delay_ms = MQTT_RECONNECT_DELAY_MS;
             }
         }
 
@@ -311,6 +475,15 @@ int main(int argc, char* argv[])
                 mutexUnlock(&g_shared.mutex);
             }
 
+            /* Identify banner (flashes for 3 seconds) */
+            if (g_identify_until > 0 && now < g_identify_until) {
+                printf(">>> IDENTIFY <<<                             \n");
+            } else {
+                printf("                                             \n");
+                g_identify_until = 0;
+            }
+            ui_lines++;
+
             /* MQTT status */
             printf("=== MQTT Status ===                          \n");
             ui_lines++;
@@ -318,7 +491,8 @@ int main(int argc, char* argv[])
             printf("State     : %-20s\n", mqtt_state_str(snap.mqtt_state));
             ui_lines++;
 
-            printf("Published : %u messages                \n", snap.publish_count);
+            printf("Published : %u msgs (QoS 1) | interval %us    \n",
+                   snap.publish_count, snap.telemetry_interval_ms / 1000);
             ui_lines++;
 
             if (snap.last_publish_tick > 0) {
@@ -328,6 +502,12 @@ int main(int argc, char* argv[])
             } else {
                 printf("Last pub  : never                       \n");
             }
+            ui_lines++;
+
+            printf("Commands  : %u", snap.cmd_count);
+            if (snap.cmd_count > 0)
+                printf(" (last: %s)", snap.last_cmd);
+            printf("                        \n");
             ui_lines++;
 
             /* Sensor readings */
