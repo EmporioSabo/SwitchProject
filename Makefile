@@ -18,11 +18,11 @@ include $(DEVKITPRO)/libnx/switch_rules
 #---------------------------------------------------------------------------------
 TARGET		:=	switch-mqtt-telemetry
 BUILD		:=	build
-SOURCES		:=	source \
+SOURCES		:=	source source/hal \
 				lib/paho.mqtt.embedded-c/MQTTPacket/src \
 				lib/paho.mqtt.embedded-c/MQTTClient-C/src
 DATA		:=	data
-INCLUDES	:=	include source \
+INCLUDES	:=	include source source/hal \
 				lib/paho.mqtt.embedded-c/MQTTPacket/src \
 				lib/paho.mqtt.embedded-c/MQTTClient-C/src
 
@@ -31,7 +31,7 @@ INCLUDES	:=	include source \
 #---------------------------------------------------------------------------------
 APP_TITLE	:=	Switch MQTT Telemetry
 APP_AUTHOR	:=	adammaytoussi
-APP_VERSION	:=	0.3.0
+APP_VERSION	:=	0.4.0
 
 #---------------------------------------------------------------------------------
 # options for code generation
