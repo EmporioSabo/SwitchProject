@@ -20,18 +20,20 @@ TARGET		:=	switch-mqtt-telemetry
 BUILD		:=	build
 SOURCES		:=	source source/hal \
 				lib/paho.mqtt.embedded-c/MQTTPacket/src \
-				lib/paho.mqtt.embedded-c/MQTTClient-C/src
+				lib/paho.mqtt.embedded-c/MQTTClient-C/src \
+				lib/cJSON
 DATA		:=	data
 INCLUDES	:=	include source source/hal \
 				lib/paho.mqtt.embedded-c/MQTTPacket/src \
-				lib/paho.mqtt.embedded-c/MQTTClient-C/src
+				lib/paho.mqtt.embedded-c/MQTTClient-C/src \
+				lib/cJSON
 
 #---------------------------------------------------------------------------------
 # Application metadata
 #---------------------------------------------------------------------------------
 APP_TITLE	:=	Switch MQTT Telemetry
 APP_AUTHOR	:=	adammaytoussi
-APP_VERSION	:=	0.4.0
+APP_VERSION	:=	0.5.0
 
 #---------------------------------------------------------------------------------
 # options for code generation

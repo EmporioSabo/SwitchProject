@@ -6,10 +6,22 @@
 #define MQTT_BROKER_PORT    1883
 #define MQTT_CLIENT_ID      "switch-01"
 
-// Telemetry settings
+// Telemetry publishing interval (consumer thread)
 #define TELEMETRY_INTERVAL_MS 5000
 
 // MQTT topic prefix
 #define MQTT_TOPIC_PREFIX   "switch"
+
+// Single aggregated telemetry topic
+#define MQTT_TELEMETRY_TOPIC  "switch/telemetry"
+
+// Per-sensor polling intervals (producer thread)
+#define SENSOR_POLL_BATTERY_MS   30000   // Battery changes slowly
+#define SENSOR_POLL_TEMP_MS      10000   // Moderate — catch thermal spikes
+#define SENSOR_POLL_WIFI_MS       5000   // Fast — detect disconnects quickly
+
+// MQTT reconnection (exponential backoff)
+#define MQTT_RECONNECT_DELAY_MS   1000   // Initial retry delay
+#define MQTT_RECONNECT_MAX_MS    30000   // Cap at 30 seconds
 
 #endif // CONFIG_H
