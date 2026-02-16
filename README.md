@@ -52,7 +52,7 @@ Edit `source/config.h` before building:
 - [x] Step 2 — Raw TCP connection to Mosquitto
 - [x] Step 3 — Paho MQTT Embedded C integration
 - [x] Step 4 — Sensor HAL (battery, temperatures, WiFi)
-- [ ] Step 5 — Full telemetry loop (collect → JSON → publish)
+- [x] Step 5 — Full telemetry loop (collect → JSON → publish)
 - [ ] Step 6 — Grafana dashboard (Mosquitto + InfluxDB)
 - [ ] Step 7 — Bidirectional MQTT, reconnection, QoS 1
 
